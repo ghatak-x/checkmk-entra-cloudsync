@@ -1,0 +1,21 @@
+title: Microsoft Entra Cloud Sync: Property changes
+agents: special_entra_cloudsync
+catalog: cloud/azure
+license: GPLv2
+distribution: checkmk-entra-cloudsync
+description:
+ Reports successful property synchronization activity from recent Cloud Sync update events without exposing property values.
+ <br>
+ Data source: Microsoft Graph v1.0, GET /auditLogs/provisioning filtered by jobId, ordered by activityDateTime descending, with a configurable look-back window.
+ <br>
+ Monitored fields: provisioningAction, provisioningStatusInfo.status, modifiedProperties.displayName, modifiedProperties.oldValue, modifiedProperties.newValue, sourceIdentity.id, targetIdentity.id.
+ <br>
+ Service output: the total number of actual property-value changes and the number of distinct objects with such changes in the monitoring window. The property-change count is not an error count. Only successful update events are evaluated; create events are excluded. Null, empty-string, empty-list and empty-dictionary values are normalized before comparison so equivalent empty values are not counted as changes. Old and new property values are used only for comparison and are not exposed to Checkmk; only attribute names and counts are retained, with up to 20 attribute names shown in details.
+ <br>
+ State mapping: this service is informational and remains OK for the reported activity. Failure of the provisioning-log query is UNKNOWN. No WARN/CRIT thresholds are currently applied to property-change counts.
+ <br>
+ Vendor documentation: https://learn.microsoft.com/en-us/graph/api/resources/provisioningobjectsummary?view=graph-rest-1.0
+item:
+ The Microsoft Entra Cloud Sync configuration name, derived from the Cloud Sync service principal display name. The synchronization job ID is used as a fallback if no display name is available.
+discovery:
+ One service is discovered for each synchronization job returned for the configured service principal whose templateId is AD2AADProvisioning. The property-change window is the provisioning-log look-back window configured in the special-agent rule and defaults to 60 minutes.

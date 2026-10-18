@@ -1,0 +1,21 @@
+title: Microsoft Entra Cloud Sync: Dropped objects
+agents: special_entra_cloudsync
+catalog: cloud/azure
+license: GPLv2
+distribution: checkmk-entra-cloudsync
+description:
+ Reports recent Cloud Sync deprovisioning and skipped provisioning events.
+ <br>
+ Data source: Microsoft Graph v1.0, GET /auditLogs/provisioning filtered by jobId, ordered by activityDateTime descending, with a configurable look-back window.
+ <br>
+ Monitored fields: activityDateTime, provisioningAction, provisioningStatusInfo.status, sourceIdentity.id, targetIdentity.id, targetIdentity.details.UserPrincipalName.
+ <br>
+ Service output: counts of successful delete, stageddelete and disable actions, plus events whose provisioning status is skipped. These values are event counts inside the configured monitoring window and are not error counts. Skipped events are shown separately and are informational; they do not necessarily mean that an object was deprovisioned.
+ <br>
+ State mapping: the service is informational and remains OK for the reported counts. Failure of the provisioning-log query is UNKNOWN. No WARN/CRIT thresholds are currently applied to dropped-object counts.
+ <br>
+ Vendor documentation: https://learn.microsoft.com/en-us/graph/api/resources/provisioningobjectsummary?view=graph-rest-1.0
+item:
+ The Microsoft Entra Cloud Sync configuration name, derived from the Cloud Sync service principal display name. The synchronization job ID is used as a fallback if no display name is available.
+discovery:
+ One service is discovered for each synchronization job returned for the configured service principal whose templateId is AD2AADProvisioning. Up to 20 recent matching dropped/deprovisioned events are retained for service details.

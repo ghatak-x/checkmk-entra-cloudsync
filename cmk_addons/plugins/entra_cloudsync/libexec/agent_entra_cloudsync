@@ -1,0 +1,552 @@
+#!/usr/bin/env python3
+"""Checkmk special agent for Microsoft Entra Cloud Sync.
+
+The agent uses app-only OAuth against Microsoft Graph and emits one Checkmk
+agent section (entra_cloudsync) containing compact JSON for the associated
+agent-based check plug-ins.
+
+No third-party Python packages are required. The client secret is resolved
+through Checkmk's password-store API when invoked by Checkmk.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+from cmk.password_store.v1_unstable import (
+    parser_add_secret_option,
+    resolve_secret_option,
+)
+
+PLUGIN_VERSION = "0.0.1"
+GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+LOGIN_BASE = "https://login.microsoftonline.com"
+SECRET_OPTION = "client-secret"
+RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}
+
+
+def _json_request(
+    url: str,
+    *,
+    method: str = "GET",
+    headers: dict[str, str] | None = None,
+    data: bytes | None = None,
+    timeout: int = 30,
+    retries: int = 3,
+) -> dict[str, Any]:
+    request_headers = {
+        "Accept": "application/json",
+        "User-Agent": f"checkmk-entra-cloudsync/{PLUGIN_VERSION}",
+    }
+    if headers:
+        request_headers.update(headers)
+
+    last_error: Exception | None = None
+
+    for attempt in range(retries + 1):
+        request = urllib.request.Request(
+            url,
+            data=data,
+            headers=request_headers,
+            method=method,
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                raw = response.read()
+                if not raw:
+                    return {}
+                return json.loads(raw.decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            body = exc.read().decode("utf-8", errors="replace")
+            if exc.code in RETRYABLE_HTTP_CODES and attempt < retries:
+                retry_after = exc.headers.get("Retry-After")
+                try:
+                    delay = float(retry_after) if retry_after else 2**attempt
+                except ValueError:
+                    delay = 2**attempt
+                time.sleep(min(max(delay, 1.0), 30.0))
+                continue
+            detail = body[:1000].replace("\n", " ")
+            raise RuntimeError(
+                f"HTTP {exc.code} while requesting Microsoft Graph: {detail}"
+            ) from exc
+        except urllib.error.URLError as exc:
+            last_error = exc
+            if attempt < retries:
+                time.sleep(min(2**attempt, 8))
+                continue
+            raise RuntimeError(f"Connection error while requesting Microsoft Graph: {exc}") from exc
+
+    raise RuntimeError(f"Microsoft Graph request failed: {last_error}")
+
+
+def _get_access_token(
+    tenant_id: str,
+    client_id: str,
+    client_secret: str,
+    timeout: int,
+) -> str:
+    token_url = f"{LOGIN_BASE}/{urllib.parse.quote(tenant_id, safe='')}/oauth2/v2.0/token"
+    body = urllib.parse.urlencode(
+        {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "grant_type": "client_credentials",
+            "scope": "https://graph.microsoft.com/.default",
+        }
+    ).encode("utf-8")
+
+    payload = _json_request(
+        token_url,
+        method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        data=body,
+        timeout=timeout,
+    )
+
+    token = payload.get("access_token")
+    if not token:
+        description = payload.get("error_description") or payload.get("error") or "unknown error"
+        raise RuntimeError(f"Unable to obtain Microsoft Graph access token: {description}")
+    return str(token)
+
+
+def _graph_get(token: str, url_or_path: str, timeout: int) -> dict[str, Any]:
+    url = url_or_path if url_or_path.startswith("https://") else f"{GRAPH_BASE}{url_or_path}"
+    return _json_request(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=timeout,
+    )
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+
+    text = str(value).strip()
+    if text.startswith("0001-01-01"):
+        return None
+
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+
+    # Graph can return seven fractional digits. datetime.fromisoformat accepts
+    # microseconds, so trim any excess fractional precision.
+    text = re.sub(r"(\.\d{6})\d+(?=[+-]\d{2}:\d{2}$)", r"\1", text)
+
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _event_identity(event: dict[str, Any]) -> tuple[str, str]:
+    source = event.get("sourceIdentity") or {}
+    target = event.get("targetIdentity") or {}
+    source_details = source.get("details") or {}
+    target_details = target.get("details") or {}
+
+    source_id = source.get("id")
+    target_id = target.get("id")
+    upn = (
+        target_details.get("UserPrincipalName")
+        or source_details.get("UserPrincipalName")
+        or target.get("displayName")
+        or source.get("displayName")
+    )
+
+    if source_id:
+        key = f"source:{source_id}"
+    elif target_id:
+        key = f"target:{target_id}"
+    elif upn:
+        key = f"upn:{str(upn).lower()}"
+    else:
+        key = f"event:{event.get('id', 'unknown')}"
+
+    display = str(upn or source_id or target_id or "unknown")
+    return key, display
+
+
+def _compact_log_event(event: dict[str, Any], object_name: str) -> dict[str, Any]:
+    status_info = event.get("provisioningStatusInfo") or {}
+    error_info = status_info.get("errorInformation") or {}
+    return {
+        "time": event.get("activityDateTime"),
+        "status": str(status_info.get("status") or "other").lower(),
+        "action": str(event.get("provisioningAction") or "unknown").lower(),
+        "object": object_name,
+        "error_code": error_info.get("errorCode"),
+        "reason": error_info.get("reason"),
+    }
+
+
+def _normalize_property_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        return None if stripped == "" else stripped
+    if value == [] or value == {}:
+        return None
+    return value
+
+
+def _collect_provisioning_logs(
+    token: str,
+    job_id: str,
+    window_minutes: int,
+    max_pages: int,
+    timeout: int,
+) -> dict[str, Any]:
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
+
+    params = {
+        "$filter": f"jobId eq '{job_id}'",
+        "$orderby": "activityDateTime desc",
+        "$top": "100",
+    }
+    url = f"{GRAPH_BASE}/auditLogs/provisioning?{urllib.parse.urlencode(params)}"
+
+    counts = {
+        "total": 0,
+        "success": 0,
+        "warning": 0,
+        "failure": 0,
+        "skipped": 0,
+        "other": 0,
+    }
+    actions: dict[str, int] = {}
+    latest_by_object: dict[str, dict[str, Any]] = {}
+
+    dropped = {
+        "delete": 0,
+        "stageddelete": 0,
+        "disable": 0,
+        "skipped": 0,
+    }
+    dropped_events: list[dict[str, Any]] = []
+
+    property_attributes: dict[str, int] = {}
+    property_objects: set[str] = set()
+    property_change_count = 0
+
+    pages = 0
+    finished = False
+
+    while url and pages < max_pages and not finished:
+        page = _graph_get(token, url, timeout)
+        pages += 1
+
+        for event in page.get("value", []):
+            event_time = _parse_datetime(event.get("activityDateTime"))
+            if event_time and event_time < cutoff:
+                finished = True
+                break
+
+            status_info = event.get("provisioningStatusInfo") or {}
+            status = str(status_info.get("status") or "other").lower()
+            action = str(event.get("provisioningAction") or "unknown").lower()
+            object_key, object_name = _event_identity(event)
+
+            counts["total"] += 1
+            if status in counts:
+                counts[status] += 1
+            else:
+                counts["other"] += 1
+
+            actions[action] = actions.get(action, 0) + 1
+
+            # Results are requested newest first. The first event encountered for
+            # an object is therefore its current state inside the monitoring window.
+            if object_key not in latest_by_object:
+                latest_by_object[object_key] = _compact_log_event(event, object_name)
+
+            if status == "success" and action in {"delete", "stageddelete", "disable"}:
+                dropped[action] += 1
+                dropped_events.append(
+                    {
+                        "time": event.get("activityDateTime"),
+                        "object": object_name,
+                        "action": action,
+                        "status": status,
+                    }
+                )
+
+            if status == "skipped":
+                dropped["skipped"] += 1
+                dropped_events.append(
+                    {
+                        "time": event.get("activityDateTime"),
+                        "object": object_name,
+                        "action": action,
+                        "status": status,
+                    }
+                )
+
+            # Property synchronization activity. Only successful UPDATE operations
+            # are counted; CREATE events contain the initial property set and would
+            # otherwise dominate the metric. Values are never exported to Checkmk.
+            if status == "success" and action == "update":
+                modified = event.get("modifiedProperties") or []
+                event_has_properties = False
+
+                for prop in modified:
+                    name = prop.get("displayName")
+                    if not name:
+                        continue
+
+                    old_value = _normalize_property_value(prop.get("oldValue"))
+                    new_value = _normalize_property_value(prop.get("newValue"))
+                    if old_value == new_value:
+                        continue
+
+                    property_change_count += 1
+                    event_has_properties = True
+                    property_attributes[str(name)] = property_attributes.get(str(name), 0) + 1
+
+                if event_has_properties:
+                    property_objects.add(object_key)
+
+        if finished:
+            break
+        url = page.get("@odata.nextLink")
+
+    unresolved_problems = [
+        event
+        for event in latest_by_object.values()
+        if event.get("status") in {"failure", "warning"}
+    ]
+    unresolved_problems.sort(key=lambda event: event.get("time") or "", reverse=True)
+
+    unresolved = {
+        "total": len(unresolved_problems),
+        "failure": sum(1 for event in unresolved_problems if event.get("status") == "failure"),
+        "warning": sum(1 for event in unresolved_problems if event.get("status") == "warning"),
+    }
+
+    property_attribute_list = [
+        {"name": name, "count": count}
+        for name, count in sorted(
+            property_attributes.items(),
+            key=lambda item: (-item[1], item[0].lower()),
+        )
+    ]
+
+    return {
+        "window_minutes": window_minutes,
+        "counts": counts,
+        "unresolved": unresolved,
+        "objects_evaluated": len(latest_by_object),
+        "actions": actions,
+        "latest_problem": unresolved_problems[0] if unresolved_problems else None,
+        "dropped_objects": {
+            "counts": dropped,
+            "events": dropped_events[:20],
+        },
+        "property_changes": {
+            "total_changes": property_change_count,
+            "objects_changed": len(property_objects),
+            "attributes": property_attribute_list,
+        },
+    }
+
+
+def _compact_execution(execution: Any) -> dict[str, Any] | None:
+    if not execution:
+        return None
+    return {
+        "state": execution.get("state"),
+        "time_began": execution.get("timeBegan"),
+        "time_ended": execution.get("timeEnded"),
+        "count_exported": execution.get("countExported"),
+        "count_escrowed": execution.get("countEscrowed"),
+        "count_escrowed_raw": execution.get("countEscrowedRaw"),
+        "error": execution.get("error"),
+    }
+
+
+def _collect_job(
+    token: str,
+    service_principal_id: str,
+    configuration_name: str,
+    job: dict[str, Any],
+    log_window_minutes: int,
+    max_pages: int,
+    timeout: int,
+) -> dict[str, Any]:
+    job_id = str(job.get("id") or "")
+    encoded_job_id = urllib.parse.quote(job_id, safe="")
+
+    detail = _graph_get(
+        token,
+        f"/servicePrincipals/{service_principal_id}/synchronization/jobs/{encoded_job_id}",
+        timeout,
+    )
+
+    schedule = detail.get("schedule") or {}
+    status = detail.get("status") or {}
+
+    job_data: dict[str, Any] = {
+        "id": job_id,
+        "template_id": detail.get("templateId") or job.get("templateId"),
+        "configuration_name": configuration_name,
+        "schedule": {
+            "state": schedule.get("state"),
+            "interval": schedule.get("interval"),
+            "expiration": schedule.get("expiration"),
+        },
+        "status": {
+            "code": status.get("code"),
+            "successive_failures": status.get("countSuccessiveCompleteFailures"),
+            "quarantine": status.get("quarantine"),
+            "steady_state_first": status.get("steadyStateFirstAchievedTime"),
+            "steady_state_last": status.get("steadyStateLastAchievedTime"),
+            "last_execution": _compact_execution(status.get("lastExecution")),
+            "last_successful_execution": _compact_execution(status.get("lastSuccessfulExecution")),
+            "last_successful_execution_with_exports": _compact_execution(
+                status.get("lastSuccessfulExecutionWithExports")
+            ),
+            "object_counts": status.get("synchronizedEntryCountByType", []),
+        },
+    }
+
+    try:
+        job_data["provisioning_logs"] = _collect_provisioning_logs(
+            token,
+            job_id,
+            log_window_minutes,
+            max_pages,
+            timeout,
+        )
+    except Exception as exc:  # keep control-plane monitoring available if logs fail
+        job_data["provisioning_logs"] = {
+            "window_minutes": log_window_minutes,
+            "error": str(exc),
+        }
+
+    return job_data
+
+
+def _print_section(payload: dict[str, Any]) -> None:
+    print("<<<entra_cloudsync:sep(0)>>>")
+    print(json.dumps(payload, separators=(",", ":"), sort_keys=True))
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Checkmk Microsoft Entra Cloud Sync special agent"
+    )
+    parser.add_argument("--tenant-id", required=True, help="Microsoft Entra tenant ID")
+    parser.add_argument("--client-id", required=True, help="App registration client ID")
+    parser_add_secret_option(
+        parser,
+        long="--client-secret",
+        help="Client secret for the app registration",
+        required=True,
+    )
+    parser.add_argument(
+        "--service-principal-id",
+        required=True,
+        help="Object ID of the Entra Cloud Sync service principal",
+    )
+    parser.add_argument(
+        "--log-window-minutes",
+        type=int,
+        default=60,
+        help="Provisioning log look-back window in minutes (default: 60)",
+    )
+    parser.add_argument(
+        "--max-pages",
+        type=int,
+        default=10,
+        help="Maximum number of provisioning-log pages to read (default: 10)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=30,
+        help="HTTP timeout in seconds (default: 30)",
+    )
+    parser.add_argument("--version", action="version", version=PLUGIN_VERSION)
+    return parser
+
+
+def main() -> int:
+    args = _build_parser().parse_args()
+
+    payload: dict[str, Any] = {
+        "plugin_version": PLUGIN_VERSION,
+        "service_principal": {
+            "id": args.service_principal_id,
+        },
+        "jobs": [],
+    }
+
+    try:
+        secret = resolve_secret_option(args, SECRET_OPTION).reveal()
+        token = _get_access_token(args.tenant_id, args.client_id, secret, args.timeout)
+
+        service_principal = _graph_get(
+            token,
+            f"/servicePrincipals/{urllib.parse.quote(args.service_principal_id, safe='')}",
+            args.timeout,
+        )
+        configuration_name = str(
+            service_principal.get("displayName") or args.service_principal_id
+        )
+        payload["service_principal"] = {
+            "id": args.service_principal_id,
+            "display_name": configuration_name,
+            "app_id": service_principal.get("appId"),
+        }
+
+        jobs_response = _graph_get(
+            token,
+            f"/servicePrincipals/{urllib.parse.quote(args.service_principal_id, safe='')}/synchronization/jobs",
+            args.timeout,
+        )
+
+        jobs = [
+            job
+            for job in jobs_response.get("value", [])
+            if job.get("templateId") == "AD2AADProvisioning"
+        ]
+
+        payload["jobs"] = [
+            _collect_job(
+                token,
+                args.service_principal_id,
+                configuration_name,
+                job,
+                max(1, args.log_window_minutes),
+                max(1, args.max_pages),
+                max(1, args.timeout),
+            )
+            for job in jobs
+        ]
+    except Exception as exc:
+        payload["collector_error"] = str(exc)
+
+    _print_section(payload)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

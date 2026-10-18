@@ -1,0 +1,23 @@
+title: Microsoft Entra Cloud Sync: Execution
+agents: special_entra_cloudsync
+catalog: cloud/azure
+license: GPLv2
+distribution: checkmk-entra-cloudsync
+description:
+ Monitors the most recent completed Cloud Sync execution, its duration and its freshness relative to the Microsoft-reported synchronization interval.
+ <br>
+ Data source: Microsoft Graph v1.0, GET /servicePrincipals/[service-principal-id]/synchronization/jobs/[job-id].
+ <br>
+ Monitored fields: schedule.interval, status.lastExecution.state, status.lastExecution.timeBegan, status.lastExecution.timeEnded, status.lastExecution.error.
+ <br>
+ Service output: the last execution state and age, execution duration in seconds, and execution freshness. A missing or sentinel execution timestamp is reported as no completed execution yet rather than as an extremely old execution.
+ <br>
+ State mapping: Succeeded is OK; any other reported last-execution state is CRIT. A reported execution error is CRIT. If no completed execution timestamp is available, the service is UNKNOWN.
+ <br>
+ Thresholds: freshness defaults to WARN at 2.0 times and CRIT at 3.0 times the synchronization interval. The levels are configurable, or can be disabled, with the Checkmk rule "Microsoft Entra Cloud Sync execution freshness".
+ <br>
+ Vendor documentation: https://learn.microsoft.com/en-us/graph/api/resources/synchronization-synchronizationstatus?view=graph-rest-1.0
+item:
+ The Microsoft Entra Cloud Sync configuration name, derived from the Cloud Sync service principal display name. The synchronization job ID is used as a fallback if no display name is available.
+discovery:
+ One service is discovered for each synchronization job returned for the configured service principal whose templateId is AD2AADProvisioning.

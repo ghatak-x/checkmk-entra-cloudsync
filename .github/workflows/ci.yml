@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install development dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Ruff
+        run: ruff check .
+      - name: Pytest
+        run: pytest
+      - name: Parse PowerShell local checks
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem -Path agents/windows/local -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              Write-Error "PowerShell parse errors in $($_.FullName): $($errors | Out-String)"
+            }
+          }
+          if ($failed) { exit 1 }
+      - name: Build MKP
+        run: python tools/build_mkp.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: entra-cloudsync-mkp
+          path: dist/*.mkp

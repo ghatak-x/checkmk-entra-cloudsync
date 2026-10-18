@@ -1,0 +1,21 @@
+title: Microsoft Entra Cloud Sync: Synchronized objects
+agents: special_entra_cloudsync
+catalog: cloud/azure
+license: GPLv2
+distribution: checkmk-entra-cloudsync
+description:
+ Reports the synchronized object counts published by the Cloud Sync synchronization job.
+ <br>
+ Data source: Microsoft Graph v1.0, GET /servicePrincipals/[service-principal-id]/synchronization/jobs/[job-id].
+ <br>
+ Monitored field: status.synchronizedEntryCountByType.
+ <br>
+ Service output: each returned object-type mapping is shown as "type: count", for example "user to User: 3". The count is the number of synchronized entries for that mapping; it is not an error count. A metric is created for each returned mapping.
+ <br>
+ State mapping: this service is informational and remains OK when counts are present or when Microsoft reports no object counts. Missing job data is UNKNOWN.
+ <br>
+ Vendor documentation: https://learn.microsoft.com/en-us/graph/api/resources/synchronization-synchronizationstatus?view=graph-rest-1.0
+item:
+ The Microsoft Entra Cloud Sync configuration name, derived from the Cloud Sync service principal display name. The synchronization job ID is used as a fallback if no display name is available.
+discovery:
+ One service is discovered for each synchronization job returned for the configured service principal whose templateId is AD2AADProvisioning.

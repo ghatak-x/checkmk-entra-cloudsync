@@ -1,0 +1,21 @@
+title: Microsoft Entra Cloud Sync: Provisioning
+agents: special_entra_cloudsync
+catalog: cloud/azure
+license: GPLv2
+distribution: checkmk-entra-cloudsync
+description:
+ Monitors object-level provisioning results and reports only currently unresolved failures or warnings as service problems while retaining recent historical activity as metrics.
+ <br>
+ Data source: Microsoft Graph v1.0, GET /auditLogs/provisioning filtered by jobId, ordered by activityDateTime descending, with a configurable look-back window.
+ <br>
+ Monitored fields: activityDateTime, provisioningAction, provisioningStatusInfo.status, provisioningStatusInfo.errorInformation.errorCode, provisioningStatusInfo.errorInformation.reason, sourceIdentity.id, targetIdentity.id, targetIdentity.details.UserPrincipalName.
+ <br>
+ Service output: unresolved failure and warning counts. These counts represent objects whose newest provisioning event in the monitoring window is still a failure or warning; they are not the total number of historical failed events. A later successful event for the same object resolves the earlier problem. Historical operation, success, warning and failure totals remain available as metrics and details for the configured window.
+ <br>
+ State mapping: one or more unresolved failures is CRIT; otherwise one or more unresolved warnings is WARN; otherwise the service is OK. Failure of the provisioning-log query is UNKNOWN.
+ <br>
+ Vendor documentation: https://learn.microsoft.com/en-us/graph/api/provisioningobjectsummary-list?view=graph-rest-1.0
+item:
+ The Microsoft Entra Cloud Sync configuration name, derived from the Cloud Sync service principal display name. The synchronization job ID is used as a fallback if no display name is available.
+discovery:
+ One service is discovered for each synchronization job returned for the configured service principal whose templateId is AD2AADProvisioning. The provisioning-log look-back window is configured in the special-agent rule and defaults to 60 minutes.

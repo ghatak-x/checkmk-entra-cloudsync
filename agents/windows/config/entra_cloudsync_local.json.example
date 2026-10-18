@@ -1,0 +1,4 @@
+{
+  "domain_controller": "dc01.example.com",
+  "timeout_seconds": 3
+}

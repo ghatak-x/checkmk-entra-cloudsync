@@ -1,0 +1,21 @@
+title: Microsoft Entra Cloud Sync: Job state
+agents: special_entra_cloudsync
+catalog: cloud/azure
+license: GPLv2
+distribution: checkmk-entra-cloudsync
+description:
+ Monitors the control-plane state of a Microsoft Entra Cloud Sync synchronization job.
+ <br>
+ Data source: Microsoft Graph v1.0, GET /servicePrincipals/[service-principal-id]/synchronization/jobs/[job-id].
+ <br>
+ Monitored fields: schedule.state, schedule.interval, status.code, status.countSuccessiveCompleteFailures, status.quarantine.
+ <br>
+ State mapping: Active schedule + Active status is OK. Active + NotRun is WARN during the restart/start grace period and CRIT after the grace period. Any other schedule/status combination is CRIT. Successive complete failures are OK at 0, WARN at 1 and CRIT at 2 or more. A non-empty quarantine state is CRIT.
+ <br>
+ Thresholds: the NotRun grace period defaults to 2.0 times the synchronization interval and is configurable with the Checkmk rule "Microsoft Entra Cloud Sync job state".
+ <br>
+ Vendor documentation: https://learn.microsoft.com/en-us/graph/api/resources/synchronization-synchronizationstatus?view=graph-rest-1.0
+item:
+ The Microsoft Entra Cloud Sync configuration name, derived from the Cloud Sync service principal display name. The synchronization job ID is used as a fallback if no display name is available.
+discovery:
+ One service is discovered for each synchronization job returned for the configured service principal whose templateId is AD2AADProvisioning.
