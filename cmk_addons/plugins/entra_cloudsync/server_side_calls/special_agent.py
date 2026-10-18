@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 
 from cmk.server_side_calls.v1 import (
     SpecialAgentCommand,

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 
 from cmk.rulesets.v1 import Help, Title
 from cmk.rulesets.v1.form_specs import (

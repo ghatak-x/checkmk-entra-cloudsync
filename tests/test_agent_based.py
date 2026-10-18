@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import IntEnum
 import importlib.util
-from pathlib import Path
 import sys
 import types
+from dataclasses import dataclass
+from enum import IntEnum
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "cmk_addons/plugins/entra_cloudsync/agent_based/entra_cloudsync.py"
@@ -142,11 +142,11 @@ def test_job_active_is_ok():
     assert results[0].summary == "Schedule: Active, status: Active"
 
 
-def test_job_notrun_starts_warn():
+def test_job_notrun_starts_warn(monkeypatch):
     job = base_job()
     job["status"]["code"] = "NotRun"
     _VALUE_STORE.clear()
-    mod.time.time = lambda: 1000.0
+    monkeypatch.setattr(mod.time, "time", lambda: 1000.0)
     results = list(mod.check_entra_cloudsync_job("example.test", {"notrun_grace_intervals": 2.0}, section(job)))
     assert results[0].state == State.WARN
     assert "grace 40m" in results[0].summary
@@ -156,7 +156,7 @@ def test_execution_emits_duration_and_age_metrics(monkeypatch):
     class FixedDateTime(mod.datetime):
         @classmethod
         def now(cls, tz=None):
-            return cls(2026, 10, 17, 20, 10, 0, tzinfo=mod.timezone.utc)
+            return cls(2026, 10, 17, 20, 10, 0, tzinfo=mod.UTC)
 
     monkeypatch.setattr(mod, "datetime", FixedDateTime)
     results = list(mod.check_entra_cloudsync_execution(

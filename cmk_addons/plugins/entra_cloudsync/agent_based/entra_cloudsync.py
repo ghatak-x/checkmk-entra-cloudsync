@@ -1,11 +1,10 @@
-#!/usr/bin/env python3
 
 from __future__ import annotations
 
 import json
 import re
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from cmk.agent_based.v2 import (
@@ -73,15 +72,15 @@ def _parse_time(value: Any) -> datetime | None:
         return None
 
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _age_seconds(value: Any) -> float | None:
     parsed = _parse_time(value)
     if parsed is None:
         return None
-    return max(0.0, (datetime.now(timezone.utc) - parsed).total_seconds())
+    return max(0.0, (datetime.now(UTC) - parsed).total_seconds())
 
 
 def _duration_seconds(start: Any, end: Any) -> float | None:
@@ -110,7 +109,7 @@ def _interval_seconds(value: Any) -> int | None:
     return total or None
 
 
-def _human_age(seconds: float | int | None) -> str:
+def _human_age(seconds: float | None) -> str:
     if seconds is None:
         return "unknown"
 

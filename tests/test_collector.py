@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
-from pathlib import Path
 import sys
 import types
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 COLLECTOR = ROOT / "cmk_addons/plugins/entra_cloudsync/libexec/agent_entra_cloudsync"
@@ -12,8 +12,13 @@ COLLECTOR = ROOT / "cmk_addons/plugins/entra_cloudsync/libexec/agent_entra_cloud
 cmk = types.ModuleType("cmk")
 password_store = types.ModuleType("cmk.password_store")
 v1 = types.ModuleType("cmk.password_store.v1_unstable")
-v1.parser_add_secret_option = lambda *args, **kwargs: None
-v1.resolve_secret_option = lambda *args, **kwargs: None
+def _noop(*args, **kwargs):
+    return None
+
+
+v1.parser_add_secret_option = _noop
+v1.resolve_secret_option = _noop
+
 sys.modules.setdefault("cmk", cmk)
 sys.modules.setdefault("cmk.password_store", password_store)
 sys.modules["cmk.password_store.v1_unstable"] = v1

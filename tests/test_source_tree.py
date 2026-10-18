@@ -29,7 +29,7 @@ def test_expected_source_layout():
 def test_repository_does_not_mirror_checkmk_local_tree():
     assert not (ROOT / "local" / "lib" / "python3").exists()
     assert not (ROOT / "scripts").exists()
-    assert set(path.name for path in (ROOT / "tools").iterdir() if path.is_file()) == {"build_mkp.py"}
+    assert {path.name for path in (ROOT / "tools").iterdir() if path.is_file()} == {"build_mkp.py"}
 
 
 def test_optional_windows_local_checks_are_present():
